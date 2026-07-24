@@ -23,6 +23,7 @@ class ProfessionalTraderApp(QtWidgets.QMainWindow):
         super().__init__()
         self.logic = TradingLogic()
         self.is_active = False
+        self.active_symbol = None
         
         self.setWindowTitle("Arena Auto-Trader (MT5 Integrated)")
         self.resize(1100, 850)
@@ -154,9 +155,16 @@ class ProfessionalTraderApp(QtWidgets.QMainWindow):
             res, actual_dist, err_msg = self.logic.place_order_with_retry(symbol, lot, dist)
             if res:
                 self.is_active = True
+                self.active_symbol = res.get("symbol", symbol)
                 self.btn_master_start.setText("إيقاف النظام")
                 self.btn_master_start.setStyleSheet("background-color: #e74c3c; color: white; font-weight: bold; border-radius: 10px;")
-                self.log(f"تم تفعيل النظام بمسافة معدلة: {actual_dist}")
+
+                buy_ticket = getattr(res.get("buy"), "order", "?")
+                sell_ticket = getattr(res.get("sell"), "order", "?")
+                self.log(
+                    f"تم تفعيل النظام على {self.active_symbol} | المسافة: {actual_dist} | "
+                    f"Buy Stop #{buy_ticket} | Sell Stop #{sell_ticket}"
+                )
                 
                 # تشغيل حلقة التتبع
                 self.trade_thread = threading.Thread(target=self.background_loop, daemon=True)
@@ -165,13 +173,14 @@ class ProfessionalTraderApp(QtWidgets.QMainWindow):
                 self.log(f"فشل في وضع الأوامر الأولية: {err_msg}")
         else:
             self.is_active = False
+            self.active_symbol = None
             self.btn_master_start.setText("بدء التداول التلقائي")
             self.btn_master_start.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold; border-radius: 10px;")
             self.log("تم إيقاف النظام.")
 
     def background_loop(self):
-        symbol = self.sym_input.text()
         while self.is_active:
+            symbol = self.active_symbol or self.sym_input.text()
             self.logic.fast_trailing_loop(symbol)
             time.sleep(0.1)
 
@@ -181,7 +190,7 @@ class ProfessionalTraderApp(QtWidgets.QMainWindow):
             self.btn_master_start.setEnabled(False)
             return
         
-        symbol = self.sym_input.text()
+        symbol = self.active_symbol or self.sym_input.text()
         spread, stop_lvl = self.logic.get_broker_constraints(symbol)
         session = utils.get_market_session()
         
