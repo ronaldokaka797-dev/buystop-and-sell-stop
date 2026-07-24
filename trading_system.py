@@ -54,11 +54,44 @@ class TradingEngine:
         else:
             self.current_distance = self.base_distance * multiplier
 
+    def _round_price(self, value, digits):
+        return round(float(value), int(digits))
+
+    def _is_success_result(self, result):
+        retcode = getattr(result, "retcode", None)
+        return retcode in {
+            getattr(mt5, "TRADE_RETCODE_DONE", None),
+            getattr(mt5, "TRADE_RETCODE_PLACED", None),
+        }
+
+    def _get_pending_filling_type(self):
+        for name in ("ORDER_FILLING_RETURN", "ORDER_FILLING_IOC", "ORDER_FILLING_FOK"):
+            value = getattr(mt5, name, None)
+            if value is not None:
+                return value
+        return None
+
+    def _remove_pending_order(self, order_ticket):
+        if not order_ticket:
+            return None
+        request = {
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order": int(order_ticket),
+        }
+        return mt5.order_send(request)
+
     def place_straddle_orders(self, symbol, price, distance, volume):
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            return None, None
+
+        digits = info.digits
+        filling_type = self._get_pending_filling_type()
+
         # حساب مستويات الأوامر
-        buy_stop_price = price + distance
-        sell_stop_price = price - distance
-        
+        buy_stop_price = self._round_price(price + distance, digits)
+        sell_stop_price = self._round_price(price - distance, digits)
+
         # وضع Buy Stop مع SL عند سعر الـ Sell Stop
         buy_request = {
             "action": mt5.TRADE_ACTION_PENDING,
@@ -68,9 +101,11 @@ class TradingEngine:
             "price": buy_stop_price,
             "sl": sell_stop_price,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "comment": "Arena Straddle",
         }
-        
+        if filling_type is not None:
+            buy_request["type_filling"] = filling_type
+
         # وضع Sell Stop مع SL عند سعر الـ Buy Stop
         sell_request = {
             "action": mt5.TRADE_ACTION_PENDING,
@@ -80,11 +115,18 @@ class TradingEngine:
             "price": sell_stop_price,
             "sl": buy_stop_price,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "comment": "Arena Straddle",
         }
-        
+        if filling_type is not None:
+            sell_request["type_filling"] = filling_type
+
         res1 = mt5.order_send(buy_request)
+        if not self._is_success_result(res1):
+            return res1, None
+
         res2 = mt5.order_send(sell_request)
+        if not self._is_success_result(res2):
+            self._remove_pending_order(getattr(res1, "order", 0))
         return res1, res2
 
     def trailing_stop(self, symbol, points):
@@ -231,11 +273,18 @@ class MainWindow(QtWidgets.QMainWindow):
         dist = self.engine.current_distance
         
         res1, res2 = self.engine.place_straddle_orders(symbol, price, dist, volume)
-        
-        if res1.retcode == mt5.TRADE_RETCODE_DONE:
-            print("Order 1 Placed")
+
+        if self.engine._is_success_result(res1) and self.engine._is_success_result(res2):
+            print(
+                f"Buy Stop #{getattr(res1, 'order', '?')} | "
+                f"Sell Stop #{getattr(res2, 'order', '?')}"
+            )
+        elif res1 is None:
+            print("Error: تعذر إنشاء أوامر الستوب بسبب عدم توفر بيانات الرمز")
+        elif not self.engine._is_success_result(res1):
+            print(f"Error Buy Stop: {getattr(res1, 'comment', 'Unknown error')}")
         else:
-            print(f"Error: {res1.comment}")
+            print(f"Error Sell Stop: {getattr(res2, 'comment', 'Unknown error')}")
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
